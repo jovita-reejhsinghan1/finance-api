@@ -20,12 +20,23 @@ def get_stock(ticker):
     timeframe = request.args.get("range", "1m")
     period = TIMEFRAMES.get(timeframe, "1mo")
 
-    stock = yf.Ticker(ticker)
-    hist = stock.history(period=period)
+    try:
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period=period)
 
-    data = [
-        {"date": str(i.date()), "close": float(r["Close"])}
-        for i, r in hist.iterrows()
-    ]
+        if hist.empty:
+            return jsonify({
+                "ticker": ticker,
+                "data": [],
+                "message": "No data available"
+            })
 
-    return jsonify({"ticker": ticker, "data": data})
+        data = [
+            {"date": str(i.date()), "close": float(r["Close"])}
+            for i, r in hist.iterrows()
+        ]
+
+        return jsonify({"ticker": ticker, "data": data})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
