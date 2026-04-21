@@ -2,3 +2,6 @@ flask
 yfinance
 pandas
 gunicorn
+google-generativeai
+python-dotenv
+supabase
