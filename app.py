@@ -21,7 +21,8 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Gemini
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-model = genai.GenerativeModel("gemma-3-1b-it")
+MODEL_NAME = os.getenv("GEMINI_MODEL", "gemma-3-1b-it")
+model = genai.GenerativeModel(MODEL_NAME)
 
 # ================= STOCK API =================
 
@@ -103,19 +104,20 @@ def save_chat(user_id, user_input, bot_response):
 def get_response(question, user_id):
     global global_user_name
 
-    user_name = extract_user_name(question)
-    if user_name:
-        global_user_name = user_name.capitalize()
-        return f"Hello {global_user_name}, how can I help you?"
+    try:
+        user_name = extract_user_name(question)
+        if user_name:
+            global_user_name = user_name.capitalize()
+            return f"Hello {global_user_name}, how can I help you?"
 
-    history = load_history(user_id)
+        history = load_history(user_id)
 
-    history_text = "\n".join([
-        f"User: {row['user_message']}\nFinanceGPT: {row['bot_response']}"
-        for row in history
-    ])
+        history_text = "\n".join([
+            f"User: {row['user_message']}\nFinanceGPT: {row['bot_response']}"
+            for row in history
+        ])
 
-    prompt = f"""
+        prompt = f"""
 You are FinanceGPT, a financial assistant.
 
 Chat history:
@@ -125,21 +127,40 @@ User: {question}
 FinanceGPT:
 """
 
-    try:
+        print("🚀 Prompt sending...")
+
         res = model.generate_content(prompt)
-        bot_response = res.text if hasattr(res, "text") else "No response."
 
-        save_chat(user_id, question, bot_response)
+        print("📦 RAW GEMINI RESPONSE:", res)
 
-        return bot_response
+        # 🔥 SAFE EXTRACTION (NO CRASH)
+        text = None
 
-    except google.api_core.exceptions.ResourceExhausted:
-        return "Usage limit reached."
+        if hasattr(res, "text") and res.text:
+            text = res.text
+
+        elif hasattr(res, "candidates") and res.candidates:
+            cand = res.candidates[0]
+
+            if hasattr(cand, "content") and cand.content:
+                parts = cand.content.parts
+                if parts and hasattr(parts[0], "text"):
+                    text = parts[0].text
+
+        if not text:
+            return f"❌ Gemini returned empty response.\nRaw: {str(res)}"
+
+        save_chat(user_id, question, text)
+
+        return text
+
     except Exception as e:
-        print("Gemini error:", e)
-        return "Error occurred."
+        import traceback
+        full_error = traceback.format_exc()
+        print("🔥 FULL ERROR:\n", full_error)
 
-
+        return f"❌ ERROR OCCURRED:\n{str(e)}"    
+        
 @app.route("/ask", methods=["POST"])
 def ask():
     auth_header = request.headers.get("Authorization")
@@ -154,7 +175,7 @@ def ask():
         return jsonify({"error": "Invalid user"}), 401
 
     data = request.get_json()
-    question = data.get("question", "")
+    question = data.get("question", "").strip()
 
     response = get_response(question, user_id)
 
