@@ -1,22 +1,19 @@
 from flask import Flask, jsonify, request
 import yfinance as yf
 import os
-import time
 import re
 from dotenv import load_dotenv
 import google.generativeai as genai
-import google.api_core.exceptions
 from supabase import create_client
 
 # ================= INIT =================
 
 load_dotenv()
-
 app = Flask(__name__)
 
 # Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY") 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Gemini
@@ -62,7 +59,8 @@ def get_stock(ticker):
         return jsonify({"ticker": ticker, "data": data})
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        print("Stock API error:", e)
+        return jsonify({"error": "Failed to fetch stock data"}), 500
 
 
 # ================= CHATBOT =================
@@ -78,38 +76,49 @@ def get_user_id(token):
     try:
         user = supabase.auth.get_user(token)
         return user.user.id
-    except:
+    except Exception as e:
+        print("Auth error:", e)
         return None
 
 
 def load_history(user_id):
-    res = supabase.table("chat_history") \
-        .select("*") \
-        .eq("user_id", user_id) \
-        .order("created_at", desc=False) \
-        .limit(10) \
-        .execute()
+    try:
+        res = supabase.table("chat_history") \
+            .select("*") \
+            .eq("user_id", user_id) \
+            .order("created_at", desc=False) \
+            .limit(10) \
+            .execute()
 
-    return res.data if res.data else []
+        return res.data if res.data else []
+
+    except Exception as e:
+        print("Load history error:", e)
+        return []
 
 
 def save_chat(user_id, user_input, bot_response):
-    supabase.table("chat_history").insert({
-        "user_id": user_id,
-        "user_message": user_input,
-        "bot_response": bot_response
-    }).execute()
+    try:
+        supabase.table("chat_history").insert({
+            "user_id": user_id,
+            "user_message": user_input,
+            "bot_response": bot_response
+        }).execute()
+    except Exception as e:
+        print("Save chat error:", e)
 
 
 def get_response(question, user_id):
     global global_user_name
 
     try:
+        # 👤 Name detection
         user_name = extract_user_name(question)
         if user_name:
             global_user_name = user_name.capitalize()
             return f"Hello {global_user_name}, how can I help you?"
 
+        # 📜 Load history
         history = load_history(user_id)
 
         history_text = "\n".join([
@@ -117,8 +126,9 @@ def get_response(question, user_id):
             for row in history
         ])
 
+        # 🧠 Prompt
         prompt = f"""
-You are FinanceGPT, a financial assistant.
+You are FinanceGPT, a helpful financial assistant.
 
 Chat history:
 {history_text}
@@ -127,13 +137,11 @@ User: {question}
 FinanceGPT:
 """
 
-        print("🚀 Prompt sending...")
+        print("🚀 Sending to Gemini...")
 
         res = model.generate_content(prompt)
 
-        print("📦 RAW GEMINI RESPONSE:", res)
-
-        # 🔥 SAFE EXTRACTION (NO CRASH)
+        # 🔥 SAFE RESPONSE EXTRACTION
         text = None
 
         if hasattr(res, "text") and res.text:
@@ -141,45 +149,58 @@ FinanceGPT:
 
         elif hasattr(res, "candidates") and res.candidates:
             cand = res.candidates[0]
-
             if hasattr(cand, "content") and cand.content:
                 parts = cand.content.parts
                 if parts and hasattr(parts[0], "text"):
                     text = parts[0].text
 
         if not text:
-            return f"❌ Gemini returned empty response.\nRaw: {str(res)}"
+            print("Empty Gemini response:", res)
+            return "Sorry, I couldn't generate a response. Try again."
 
+        # 💾 Save chat
         save_chat(user_id, question, text)
 
         return text
 
     except Exception as e:
         import traceback
-        full_error = traceback.format_exc()
-        print("🔥 FULL ERROR:\n", full_error)
+        print("🔥 GEMINI ERROR:\n", traceback.format_exc())
+        return "Something went wrong. Please try again."
 
-        return f"❌ ERROR OCCURRED:\n{str(e)}"    
-        
+
+# ================= API =================
+
 @app.route("/ask", methods=["POST"])
 def ask():
-    auth_header = request.headers.get("Authorization")
+    try:
+        # 🔐 AUTH HEADER CHECK
+        auth_header = request.headers.get("Authorization")
 
-    if not auth_header:
-        return jsonify({"error": "No auth"}), 401
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return jsonify({"error": "Invalid auth header"}), 401
 
-    token = auth_header.split(" ")[1]
-    user_id = get_user_id(token)
+        token = auth_header.split(" ")[1]
+        user_id = get_user_id(token)
 
-    if not user_id:
-        return jsonify({"error": "Invalid user"}), 401
+        if not user_id:
+            return jsonify({"error": "Invalid user"}), 401
 
-    data = request.get_json()
-    question = data.get("question", "").strip()
+        # 📩 REQUEST DATA
+        data = request.get_json()
+        question = data.get("question", "").strip()
 
-    response = get_response(question, user_id)
+        if not question:
+            return jsonify({"error": "Empty question"}), 400
 
-    return jsonify({"response": response})
+        # 🤖 GET RESPONSE
+        response = get_response(question, user_id)
+
+        return jsonify({"response": response})
+
+    except Exception as e:
+        print("ASK API ERROR:", e)
+        return jsonify({"error": "Server error"}), 500
 
 
 # ================= RUN =================
