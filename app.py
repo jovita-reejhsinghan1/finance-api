@@ -5,11 +5,13 @@ import re
 from dotenv import load_dotenv
 import google.generativeai as genai
 from supabase import create_client
+from flask_cors import CORS
 
 # ================= INIT =================
 
 load_dotenv()
 app = Flask(__name__)
+CORS(app, supports_credentials=True)
 
 # Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL")
